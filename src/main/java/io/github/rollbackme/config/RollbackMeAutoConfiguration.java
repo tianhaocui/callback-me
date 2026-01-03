@@ -78,6 +78,47 @@ public class RollbackMeAutoConfiguration {
     }
     
     /**
+     * 【核心修复】注册线程池后置处理器
+     * <p>
+     * 自动为所有用户自定义的 {@link ThreadPoolTaskExecutor} 注入演习装饰器，
+     * 防止用户自定义线程池漏掉演习上下文导致数据泄露。
+     * </p>
+     * 
+     * <p>
+     * <b>工作原理：</b>
+     * <ul>
+     *   <li>检测容器中所有的 {@link ThreadPoolTaskExecutor} Bean</li>
+     *   <li>如果用户已配置 {@link TaskDecorator}，使用 {@link DryRunExecutorPostProcessor.CompositeTaskDecorator} 组合装饰器</li>
+     *   <li>如果用户未配置，直接添加演习装饰器</li>
+     * </ul>
+     * </p>
+     * 
+     * <p>
+     * <b>示例场景：</b>
+     * </p>
+     * <pre>
+     * // 用户自定义线程池但忘记设置 TaskDecorator
+     * &#64;Bean("myExecutor")
+     * public Executor myExecutor() {
+     *     ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+     *     executor.initialize();
+     *     return executor;  // 缺少 TaskDecorator！
+     * }
+     * 
+     * // 后置处理器会自动为 myExecutor 注入演习装饰器
+     * // 确保 @Async("myExecutor") 方法也能正确传递演习标识
+     * </pre>
+     * 
+     * @param dryRunTaskDecorator 演习装饰器
+     * @return 线程池后置处理器
+     */
+    @Bean
+    public DryRunExecutorPostProcessor dryRunExecutorPostProcessor(DryRunTaskDecorator dryRunTaskDecorator) {
+        logger.info("[RollbackMe] 注册 DryRunExecutorPostProcessor，将自动为所有线程池注入演习装饰器");
+        return new DryRunExecutorPostProcessor(dryRunTaskDecorator);
+    }
+    
+    /**
      * 【核心修复】独立的异步配置内部类
      * <p>
      * 只有当容器中不存在 {@link AsyncConfigurer} 时，才会启用这个配置。
