@@ -7,7 +7,7 @@
 
     <groupId>io.github.tianhaocui</groupId>
     <artifactId>rollback-me-spring-boot-starter</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
     <packaging>jar</packaging>
 
     <name>rollback-me-spring-boot-starter</name>
@@ -209,7 +209,7 @@
                 <version>0.4.0</version>
                 <extensions>true</extensions>
                 <configuration>
-                    <publishingServerId>central</publishingServerId>
+                    <publishingServerId>loghelper</publishingServerId>
                     <tokenAuth>true</tokenAuth>
                 </configuration>
             </plugin>

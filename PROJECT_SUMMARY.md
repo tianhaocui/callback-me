@@ -168,7 +168,7 @@ mvn clean deploy -P release
 <dependency>
     <groupId>io.github.rollbackme</groupId>
     <artifactId>rollback-me-spring-boot-starter</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
 </dependency>
 ```
 
