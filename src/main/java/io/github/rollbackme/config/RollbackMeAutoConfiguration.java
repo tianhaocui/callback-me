@@ -4,12 +4,19 @@ import io.github.rollbackme.aspect.DryRunAspect;
 import io.github.rollbackme.support.DryRunTaskDecorator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.aop.interceptor.AsyncUncaughtExceptionHandler;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.task.TaskDecorator;
+import org.springframework.scheduling.annotation.AsyncConfigurer;
+import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+
+import java.util.concurrent.Executor;
 
 /**
  * RollbackMe 自动装配类
@@ -18,6 +25,7 @@ import org.springframework.core.task.TaskDecorator;
  * <ul>
  *   <li>{@link DryRunAspect} - AOP 切面，拦截 @DryRun 注解</li>
  *   <li>{@link DryRunTaskDecorator} - 任务装饰器，支持多线程上下文传递</li>
+ *   <li>{@link RollbackMeAsyncConfigurer} - 自动配置异步执行器（可选）</li>
  * </ul>
  * </p>
  * 
@@ -60,29 +68,80 @@ public class RollbackMeAutoConfiguration {
      * 如果容器中已存在 TaskDecorator，则不注册此 Bean（避免冲突）。
      * </p>
      * 
-     * <p><b>重要提示：</b></p>
-     * <p>
-     * 此 Bean 的注册不会自动应用到所有线程池。
-     * 用户需要在配置线程池时手动设置 TaskDecorator，例如：
-     * </p>
-     * <pre>
-     * &#64;Bean
-     * public ThreadPoolTaskExecutor taskExecutor(DryRunTaskDecorator decorator) {
-     *     ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-     *     executor.setTaskDecorator(decorator);  // 关键步骤
-     *     executor.initialize();
-     *     return executor;
-     * }
-     * </pre>
-     * 
      * @return DryRunTaskDecorator 实例
      */
     @Bean
     @ConditionalOnMissingBean(TaskDecorator.class)
     public DryRunTaskDecorator dryRunTaskDecorator() {
         logger.info("[RollbackMe] 注册 DryRunTaskDecorator 任务装饰器");
-        logger.info("[RollbackMe] 提示：请在线程池配置中使用 setTaskDecorator() 方法应用此装饰器");
         return new DryRunTaskDecorator();
+    }
+    
+    /**
+     * 【核心修复】独立的异步配置内部类
+     * <p>
+     * 只有当容器中不存在 {@link AsyncConfigurer} 时，才会启用这个配置。
+     * 这样既保证了默认情况下的 @Async 上下文传递，又不影响用户自定义的线程池配置。
+     * </p>
+     * 
+     * <p>
+     * <b>工作原理：</b>
+     * <ol>
+     *   <li>如果用户自定义了 {@link AsyncConfigurer}，Spring 会跳过此配置，使用用户的配置</li>
+     *   <li>如果用户没有自定义，Spring 会加载此配置，让 {@code @Async} 自动具备演习能力</li>
+     *   <li>使用 {@link ObjectProvider} 注入装饰器，防止循环依赖或 Bean 未初始化</li>
+     * </ol>
+     * </p>
+     */
+    @Configuration
+    @ConditionalOnMissingBean(AsyncConfigurer.class)
+    @EnableAsync
+    public static class RollbackMeAsyncConfigurer implements AsyncConfigurer {
+        
+        private static final Logger logger = LoggerFactory.getLogger(RollbackMeAsyncConfigurer.class);
+        
+        private final DryRunTaskDecorator dryRunTaskDecorator;
+        
+        /**
+         * 使用 ObjectProvider 注入，防止循环依赖或 Bean 未初始化
+         * 
+         * @param decoratorProvider TaskDecorator 提供者
+         */
+        public RollbackMeAsyncConfigurer(ObjectProvider<DryRunTaskDecorator> decoratorProvider) {
+            this.dryRunTaskDecorator = decoratorProvider.getIfAvailable();
+        }
+        
+        @Override
+        public Executor getAsyncExecutor() {
+            ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+            // 默认参数配置
+            executor.setCorePoolSize(10);
+            executor.setMaxPoolSize(50);
+            executor.setQueueCapacity(1000);
+            executor.setThreadNamePrefix("rollback-me-async-");
+            executor.setWaitForTasksToCompleteOnShutdown(true);
+            executor.setAwaitTerminationSeconds(60);
+            
+            // 关键：绑定 Decorator
+            if (dryRunTaskDecorator != null) {
+                executor.setTaskDecorator(dryRunTaskDecorator);
+                logger.info("[RollbackMe] ✅ 已激活默认异步线程池，并绑定演习上下文装饰器");
+                logger.info("[RollbackMe] 提示：@Async 方法现在会自动继承演习标识，无需手动配置");
+            } else {
+                logger.warn("[RollbackMe] ⚠️ 未找到 TaskDecorator，异步任务无法传递演习状态");
+            }
+            
+            executor.initialize();
+            return executor;
+        }
+        
+        @Override
+        public AsyncUncaughtExceptionHandler getAsyncUncaughtExceptionHandler() {
+            return (ex, method, params) -> {
+                logger.error("[RollbackMe] 异步任务执行异常: {}.{}", 
+                    method.getDeclaringClass().getName(), method.getName(), ex);
+            };
+        }
     }
 }
 
