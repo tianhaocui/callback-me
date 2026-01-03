@@ -32,7 +32,7 @@ public class RollbackMePropertiesTest {
         
         // 测试 headerName
         properties.setHeaderName("X-Dry-Run");
-        assertEquals("custom-dry-run", properties.getHeaderName());
+        assertEquals("X-Dry-Run", properties.getHeaderName());
         
         // 测试 verboseLogging
         properties.setVerboseLogging(true);

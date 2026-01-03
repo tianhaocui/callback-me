@@ -148,7 +148,7 @@ public class DryRunAspectTest {
     @Test
     public void testDryRunFromContext() throws Throwable {
         // 直接设置上下文（模拟从父线程传递）
-        DryRunContext.setDryRun(true);
+        DryRunContext.enter();
         
         // 不设置 HTTP 请求（模拟子线程场景）
         
@@ -169,6 +169,9 @@ public class DryRunAspectTest {
         assertEquals(expectedResult, result);
         verify(transactionManager, times(1)).getTransaction(any());
         verify(transactionManager, times(1)).rollback(transactionStatus);
+        
+        // 清理上下文（切面会调用 exit，但测试中我们手动设置了 enter，需要手动清理）
+        DryRunContext.clear();
     }
     
     /**

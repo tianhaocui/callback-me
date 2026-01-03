@@ -35,8 +35,8 @@ public class DryRunTaskDecoratorTest {
      */
     @Test
     public void testPropagateToChildThread() throws InterruptedException {
-        // 在主线程设置演习标识
-        DryRunContext.setDryRun(true);
+        // 在主线程设置演习标识（使用新的引用计数 API）
+        DryRunContext.enter();
         assertTrue(DryRunContext.isDryRun(), "主线程应该处于演习模式");
         
         // 使用 CountDownLatch 等待异步任务完成
@@ -65,6 +65,9 @@ public class DryRunTaskDecoratorTest {
         
         // 验证工作线程继承了演习标识
         assertTrue(childThreadValue[0], "工作线程应该继承主线程的演习标识");
+        
+        // 清理主线程上下文
+        DryRunContext.exit();
         
         executor.shutdown();
     }
@@ -106,7 +109,7 @@ public class DryRunTaskDecoratorTest {
      */
     @Test
     public void testContextCleanup() throws InterruptedException {
-        DryRunContext.setDryRun(true);
+        DryRunContext.enter();
         
         CountDownLatch latch = new CountDownLatch(1);
         
@@ -129,7 +132,7 @@ public class DryRunTaskDecoratorTest {
         final boolean[] secondTaskValue = {true};
         
         // 主线程清除演习标识
-        DryRunContext.clear();
+        DryRunContext.exit();
         
         Runnable secondTask = () -> {
             try {

@@ -21,7 +21,6 @@ import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
 import jakarta.servlet.http.HttpServletRequest;
-import java.lang.reflect.Method;
 
 /**
  * 演习模式切面
@@ -139,36 +138,35 @@ public class DryRunAspect {
         // 获取事务管理器
         PlatformTransactionManager transactionManager = getTransactionManager(dryRun);
         if (transactionManager == null) {
-            logger.warn("[DryRun] 未找到事务管理器，无法执行演习模式，将正常执行方法");
+            logger.warn("[DryRun] 未找到事务管理器，降级为正常执行");
             return joinPoint.proceed();
         }
         
-        // 标记当前线程为演习模式
-        boolean needClearContext = !DryRunContext.isDryRun();
-        if (needClearContext) {
-            DryRunContext.setDryRun(true);
-        }
+        // 【修复点一】引用计数：进入演习（支持嵌套调用）
+        DryRunContext.enter();
         
         // 开启新事务（REQUIRES_NEW 确保独立事务）
         DefaultTransactionDefinition definition = new DefaultTransactionDefinition();
         definition.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
-        definition.setName("DryRunTransaction-" + getMethodName(joinPoint));
+        definition.setName("DryRun-" + getMethodName(joinPoint));
+        // 【修复点三】设置超时，防止死锁或连接耗尽（30秒）
+        definition.setTimeout(30);
+        
         TransactionStatus transactionStatus = transactionManager.getTransaction(definition);
         
         if (properties.isVerboseLogging()) {
-            logger.info("[DryRun] 已开启演习事务: {}", definition.getName());
+            logger.info("[DryRun] Transaction Started: {}", definition.getName());
         }
-        
-        Object result = null;
-        Throwable exception = null;
         
         try {
             // 执行目标方法
-            result = joinPoint.proceed();
-            return result;
+            return joinPoint.proceed();
             
         } catch (Throwable t) {
-            exception = t;
+            // 记录异常但不吞掉
+            if (properties.isVerboseLogging()) {
+                logger.warn("[DryRun] 业务执行异常: {}", t.getMessage());
+            }
             throw t;
             
         } finally {
@@ -176,44 +174,45 @@ public class DryRunAspect {
             try {
                 if (!transactionStatus.isCompleted()) {
                     transactionManager.rollback(transactionStatus);
-                    
                     if (properties.isVerboseLogging()) {
-                        String status = exception != null ? "异常" : "成功";
-                        logger.info("[DryRun] 演习事务已回滚（方法执行{}）: {}", 
-                            status, definition.getName());
+                        logger.info("[DryRun] Transaction Rolled Back: {}", definition.getName());
                     }
                 }
             } catch (Exception e) {
-                logger.error("[DryRun] 回滚事务时发生异常", e);
+                logger.error("[DryRun] Rollback Failed!", e);
             }
             
-            // 清理上下文（防止线程池污染）
-            if (needClearContext) {
-                DryRunContext.clear();
-                if (logger.isDebugEnabled()) {
-                    logger.debug("[DryRun] 已清理演习标识");
-                }
-            }
+            // 【修复点一】引用计数：退出演习（计数器归零时自动 remove）
+            DryRunContext.exit();
         }
     }
     
     /**
-     * 获取事务管理器
+     * 【修复点二】健壮的事务管理器获取逻辑
+     * <p>
+     * 优先按名称查找，避免多数据源场景下的 Bean 冲突
+     * </p>
      * 
      * @param dryRun 注解实例
-     * @return 事务管理器
+     * @return 事务管理器，如果获取失败返回 null
      */
     private PlatformTransactionManager getTransactionManager(DryRun dryRun) {
         String tmName = dryRun.transactionManager();
         
         try {
+            // 1. 如果注解指定了名字，直接拿
             if (StringUtils.hasText(tmName)) {
-                // 指定了事务管理器名称
                 return applicationContext.getBean(tmName, PlatformTransactionManager.class);
-            } else {
-                // 使用默认事务管理器
-                return applicationContext.getBean(PlatformTransactionManager.class);
             }
+            
+            // 2. 没指定，先尝试拿默认名字 "transactionManager" (Spring Boot 默认)
+            if (applicationContext.containsBean("transactionManager")) {
+                return applicationContext.getBean("transactionManager", PlatformTransactionManager.class);
+            }
+            
+            // 3. 实在不行，按类型拿（多数据源时可能报错，但已经尽力了）
+            return applicationContext.getBean(PlatformTransactionManager.class);
+            
         } catch (Exception e) {
             logger.error("[DryRun] 获取事务管理器失败: {}", tmName, e);
             return null;
@@ -221,15 +220,14 @@ public class DryRunAspect {
     }
     
     /**
-     * 获取方法全名
+     * 获取方法名
      * 
      * @param joinPoint 连接点
-     * @return 方法全名
+     * @return 方法名
      */
     private String getMethodName(ProceedingJoinPoint joinPoint) {
         MethodSignature signature = (MethodSignature) joinPoint.getSignature();
-        Method method = signature.getMethod();
-        return method.getDeclaringClass().getSimpleName() + "." + method.getName();
+        return signature.getMethod().getName();
     }
 }
 
