@@ -13,6 +13,7 @@
 - ✅ **灵活触发**：支持 HTTP Header 或程序化触发
 - ✅ **线程安全**：基于 `InheritableThreadLocal` + `TaskDecorator` 实现
 - ✅ **Spring Boot 原生支持**：自动装配，开箱即用
+- ✅ **环境要求**：Java 17+ & Spring Boot 3.0+
 
 ## 🚀 快速开始
 
@@ -78,85 +79,50 @@ rollback-me.verbose-logging=true
 
 ---
 
-## 🌟 多线程支持（重要）
+## 🌟 多线程支持（无感自动装配）
 
-RollbackMe 的核心优势之一是**完整支持多线程和异步场景**。要启用此功能，需要配置 `DryRunTaskDecorator`。
+RollbackMe 的核心优势之一是**完整支持多线程和异步场景**。
 
-### 为什么需要 TaskDecorator？
+### 自动化配置原理
 
-在异步任务中，Spring 使用线程池执行 `@Async` 方法。默认情况下，`ThreadLocal` 无法自动传递到线程池中的工作线程。`DryRunTaskDecorator` 解决了这个问题：
+得益于 `DryRunExecutorPostProcessor`，框架会自动扫描容器中所有的 `ThreadPoolTaskExecutor` 线程池，并自动注入 `DryRunTaskDecorator`。
 
-1. **提交任务时**：捕获主线程的演习标识
-2. **执行任务前**：将标识恢复到工作线程
-3. **执行任务后**：清理标识，避免污染线程池
+**您不需要做任何额外配置！** 只要您的线程池是 Spring 管理的 Bean，演习标识就会自动传递。
 
-### 配置方式一：使用自动注入的 Decorator
+### 默认异步线程池
 
-```java
-@Configuration
-@EnableAsync
-public class AsyncConfig {
-    
-    @Bean
-    public ThreadPoolTaskExecutor taskExecutor(DryRunTaskDecorator decorator) {
-        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(10);
-        executor.setMaxPoolSize(20);
-        executor.setQueueCapacity(100);
-        executor.setThreadNamePrefix("async-");
-        
-        // 🔑 关键：设置装饰器
-        executor.setTaskDecorator(decorator);
-        
-        executor.initialize();
-        return executor;
-    }
-}
-```
-
-### 配置方式二：手动创建 Decorator
+如果您没有自定义线程池，框架还提供了一个默认的 `RollbackMeAsyncConfigurer`，确保 `@Async` 注解的方法也能自动继承演习标识。
 
 ```java
-@Configuration
-@EnableAsync
-public class AsyncConfig {
-    
-    @Bean
-    public ThreadPoolTaskExecutor taskExecutor() {
-        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(10);
-        executor.setMaxPoolSize(20);
-        executor.setQueueCapacity(100);
-        
-        // 手动创建装饰器
-        executor.setTaskDecorator(new DryRunTaskDecorator());
-        
-        executor.initialize();
-        return executor;
-    }
-}
-```
-
-### 配置方式三：多个线程池统一配置
-
-```java
-@Configuration
-@EnableAsync
-public class AsyncConfig implements AsyncConfigurer {
+@Service
+public class OrderService {
     
     @Autowired
-    private DryRunTaskDecorator dryRunTaskDecorator;
+    private NotificationService notificationService;
     
-    @Override
-    public Executor getAsyncExecutor() {
-        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(10);
-        executor.setMaxPoolSize(20);
-        executor.setTaskDecorator(dryRunTaskDecorator);
-        executor.initialize();
-        return executor;
+    @DryRun
+    @Transactional
+    public void createOrder(OrderDTO order) {
+        // 主线程：保存订单
+        orderRepository.save(order);
+        
+        // 异步线程：发送通知（自动继承演习标识）
+        notificationService.sendEmailAsync(order);
+        
+        // 两个线程的数据都会被回滚！
     }
 }
+```
+
+### （可选）手动配置
+
+仅当您使用非 `ThreadPoolTaskExecutor` 类型的线程池（如 JDK 原生 `ExecutorService`）时，才需要手动包装：
+
+```java
+Runnable task = new Runnable() { ... };
+// 手动装饰任务
+Runnable decoratedTask = dryRunTaskDecorator.decorate(task);
+executorService.submit(decoratedTask);
 ```
 
 ### 使用示例
@@ -342,28 +308,17 @@ DryRunContext.clear();  // 清理状态
 
 ## ⚠️ 注意事项
 
-### 1. 必须配置 TaskDecorator
+### 1. JDK 与 Spring Boot 版本
 
-如果使用 `@Async` 或手动创建线程池，**必须**配置 `DryRunTaskDecorator`，否则子线程无法继承演习标识，可能产生脏数据！
+本项目使用了 Java 17 的特性以及 Spring Boot 3.x 的 `jakarta.servlet` API，因此：
+- **JDK 版本**：必须 >= 17
+- **Spring Boot 版本**：必须 >= 3.0
 
-```java
-// ❌ 错误：未设置 TaskDecorator
-@Bean
-public ThreadPoolTaskExecutor taskExecutor() {
-    ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-    executor.initialize();
-    return executor;
-}
+不支持 Java 8 或 Spring Boot 2.x。
 
-// ✅ 正确：设置 TaskDecorator
-@Bean
-public ThreadPoolTaskExecutor taskExecutor(DryRunTaskDecorator decorator) {
-    ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-    executor.setTaskDecorator(decorator);  // 关键
-    executor.initialize();
-    return executor;
-}
-```
+### 2. 非 ThreadPoolTaskExecutor 线程池
+
+自动装配仅支持 Spring 的 `ThreadPoolTaskExecutor`。如果您使用了 JDK 原生的 `ThreadPoolExecutor` 或其他第三方线程池，请务必手动使用 `DryRunTaskDecorator` 包装任务。
 
 ### 2. 事务传播级别
 
